@@ -1,107 +1,121 @@
-const config = {
-  host: 'http://4k.spicetv.cc/stalker_portal/c/',
-  mac_address: '00:1A:79:00:2C:D8',
-  serial_number: '61A63207AA03F',
-  device_id: '061A842DFD8AA25AA9184BAB968565D2E8831804C89956DA707F8396F7D4BBDB',
-  device_id_2: '061A842DFD8AA25AA9184BAB968565D2E8831804C89956DA707F8396F7D4BBDB',
-  stb_type: 'MAG250',
-  api_signature: '263',
-};
+export default {
+  async fetch(request) {
 
-const headers = {
-  Cookie: `mac=${config.mac_address}`,
-  "User-Agent": "Mozilla/5.0 MAG250",
-  "Referer": `http://${config.host}/stalker_portal/c/`
-};
+    const config = {
+      host: 'http://portal.airtel4k.co',
+      mac: '00:1A:79:00:2D:6A',
+      serial: '7D051746180ABD8E70AA3C6E23ADBC8D',
+      device1: 'FC21220582688F2AA17265FAC3C00AD4C8467372CB70D79278F6CAD53AFDB7D7',
+      device2: 'FC21220582688F2AA17265FAC3C00AD4C8467372CB70D79278F6CAD53AFDB7D7'
+    };
 
-// -------- SAFE FETCH --------
-async function safeJSON(res) {
-  try {
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-// -------- FETCH CHANNELS --------
-async function getChannels() {
-  const url = `http://${config.host}/stalker_portal/server/load.php?type=itv&action=get_all_channels&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers });
-  const data = await safeJSON(res);
-  return data?.js?.data || [];
-}
-
-// -------- STREAM URL --------
-async function getStream(id) {
-  const url = `http://${config.host}/stalker_portal/server/load.php?type=itv&action=create_link&cmd=ffrt%20http://localhost/ch/${id}&JsHttpRequest=1-xml`;
-  const res = await fetch(url, { headers });
-  const data = await safeJSON(res);
-  return data?.js?.cmd || '';
-}
-
-// -------- M3U BUILDER --------
-function buildM3U(channels, origin) {
-  let m3u = "#EXTM3U\n";
-
-  for (const ch of channels) {
-    const id = ch.cmd?.split('/').pop() || '';
-    const name = ch.name || 'Unknown';
-
-    m3u += `#EXTINF:-1,${name}\n`;
-    m3u += `${origin}/${id}.m3u8\n`;
-  }
-
-  return m3u;
-}
-
-// -------- MAIN HANDLER --------
-addEventListener("fetch", event => {
-  event.respondWith(handle(event.request));
-});
-
-async function handle(req) {
-  const url = new URL(req.url);
-
-  // HEALTH CHECK
-  if (url.pathname === "/") {
-    return new Response("STATIC IPTV WORKER OK", {
-      status: 200
-    });
-  }
-
-  // PLAYLIST (STATIC)
-  if (url.pathname === "/playlist.m3u") {
-
-    const channels = await getChannels();
-
-    const origin = url.origin;
-    const m3u = buildM3U(channels, origin);
-
-    return new Response(m3u, {
-      headers: {
-        "Content-Type": "application/vnd.apple.mpegurl"
+    // 🔁 Retry helper
+    async function fetchWithRetry(url, options, retries = 3) {
+      for (let i = 0; i < retries; i++) {
+        try {
+          const res = await fetch(url, options);
+          if (res.ok) return res;
+        } catch (e) {}
+        await new Promise(r => setTimeout(r, 1000));
       }
-    });
-  }
-
-  // STREAM HANDLER (NO REDIRECT)
-  if (url.pathname.endsWith(".m3u8")) {
-
-    const id = url.pathname.replace(".m3u8", "").slice(1);
-
-    const stream = await getStream(id);
-
-    if (!stream) {
-      return new Response("Stream not found", { status: 404 });
+      throw new Error("Request failed after retries");
     }
 
-    // IMPORTANT: direct return (no redirect)
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "application/vnd.apple.mpegurl"
-      }
-    });
-  }
+    try {
 
-  return new Response("Not found", { status: 404 });
-}
+      // =========================
+      // 1. HANDSHAKE
+      // =========================
+      const handshake = await fetchWithRetry(
+        `${config.host}/portal.php?type=stb&action=handshake&JsHttpRequest=1-xml`,
+        {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)",
+            "Cookie": `mac=${config.mac}; stb_lang=en; timezone=Asia/Kolkata`,
+            "X-User-Agent": "Model: MAG250; Link: Ethernet",
+            "Connection": "Keep-Alive"
+          }
+        }
+      );
+
+      const hsData = await handshake.json();
+      const token = hsData?.js?.token;
+
+      if (!token) {
+        return new Response("❌ Handshake failed", { status: 500 });
+      }
+
+      // =========================
+      // 2. PROFILE (IMPORTANT)
+      // =========================
+      await fetchWithRetry(
+        `${config.host}/portal.php?type=stb&action=get_profile&JsHttpRequest=1-xml`,
+        {
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)",
+            "Cookie": `mac=${config.mac}; serial_number=${config.serial}; device_id=${config.device1}; device_id2=${config.device2}`,
+            "X-User-Agent": "Model: MAG250; Link: Ethernet"
+          }
+        }
+      );
+
+      // =========================
+      // 3. CHANNELS
+      // =========================
+      const channelsRes = await fetchWithRetry(
+        `${config.host}/portal.php?type=itv&action=get_all_channels&JsHttpRequest=1-xml`,
+        {
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)",
+            "Cookie": `mac=${config.mac}`,
+            "X-User-Agent": "Model: MAG250; Link: Ethernet"
+          }
+        }
+      );
+
+      const data = await channelsRes.json();
+      const channels = data?.js?.data || [];
+
+      if (channels.length === 0) {
+        return new Response("❌ No channels (MAC blocked / portal restricted)", { status: 500 });
+      }
+
+      // =========================
+      // 4. BUILD M3U
+      // =========================
+      let m3u = "#EXTM3U\n";
+
+      for (let ch of channels) {
+        let name = ch.name || "No Name";
+        let cmd = ch.cmd;
+
+        if (!cmd) continue;
+
+        let stream = cmd.replace("ffmpeg ", "").trim();
+
+        // 🔥 Anti-freeze tweak
+        if (!stream.includes("User-Agent")) {
+          stream += "|User-Agent=VLC/3.0.18 LibVLC/3.0.18";
+        }
+
+        m3u += `#EXTINF:-1,${name}\n`;
+        m3u += `${stream}\n`;
+      }
+
+      // =========================
+      // 5. RESPONSE
+      // =========================
+      return new Response(m3u, {
+        headers: {
+          "Content-Type": "application/vnd.apple.mpegurl",
+          "Cache-Control": "no-store"
+        }
+      });
+
+    } catch (err) {
+      return new Response("❌ Error: " + err.message, { status: 500 });
+    }
+  }
+};
